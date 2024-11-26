@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Basic VRM and BVH Animation</title>
+	<script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@2.0.7/lib/three-vrm.module.js"
+            }
+        }
+    </script>
+	<style>
+		body {
+			margin: 0;
+			overflow: hidden;
+		}
+
+		canvas {
+			display: block;
+		}
+
+		button {
+			position: absolute;
+			top: 10px;
+			padding: 10px;
+			background-color: #000000;
+			color: white;
+			border: none;
+			cursor: pointer;
+			border-radius: 5px;
+			z-index: 10;
+		}
+
+		button:hover {
+			background-color: #000000;
+		}
+
+		#stopAudioButton {
+			left: 120px;
+		}
+	</style>
+</head>
+
+<body>
+	<!-- Buttons for audio control -->
+	<button id="playAudioButton">Play</button>
+	<button id="stopAudioButton">Stop</button>
+
+	<script type="module">
+		import * as THREE from 'three';
+		import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+		import { BVHLoader } from 'three/addons/loaders/BVHLoader.js';
+		import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+		import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+		// Renderer setup
+		const renderer = new THREE.WebGLRenderer();
+		renderer.setSize(window.innerWidth, window.innerHeight);
+		renderer.setPixelRatio(window.devicePixelRatio);
+		document.body.appendChild(renderer.domElement);
+		renderer.setClearColor(0x00ff00, 1.0)
+
+		// Camera setup
+		const camera = new THREE.PerspectiveCamera(30.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
+		camera.position.set(0.0, 1.5, 5.0);
+
+		// Orbit controls
+		const controls = new OrbitControls(camera, renderer.domElement);
+		controls.target.set(0.0, 1.1, 0.0);
+		controls.update();
+
+		// Scene setup
+		const scene = new THREE.Scene();
+
+		// Lighting
+		const light = new THREE.DirectionalLight(0xffffff, 3);
+		light.position.set(1.0, 1.0, 1.0).normalize();
+		scene.add(light);
+
+		// Audio setup
+		const listener = new THREE.AudioListener();
+		camera.add(listener);
+
+		const sound = new THREE.Audio(listener);
+		const audioLoader = new THREE.AudioLoader();
+
+		// Load audio file
+		audioLoader.load('./natu.m4a', (buffer) => {
+			sound.setBuffer(buffer);
+			sound.setLoop(true);
+			sound.setVolume(0.5);
+			console.log("Audio loaded.");
+		});
+
+		// Play audio
+		const playButton = document.getElementById('playAudioButton');
+		playButton.addEventListener('click', () => {
+			// AudioContext の初期化をユーザー操作後に行う
+			if (sound.context.state === 'suspended') {
+				sound.context.resume().then(() => {
+					console.log("AudioContext resumed");
+					if (!sound.isPlaying) {
+						sound.play();
+						console.log("Audio playback started.");
+					}
+				});
+			} else {
+				if (!sound.isPlaying) {
+					sound.play();
+					console.log("Audio playback started.");
+				}
+			}
+		});
+
+
+		// Stop audio
+		const stopButton = document.getElementById('stopAudioButton');
+		stopButton.addEventListener('click', () => {
+			if (sound.isPlaying) {
+				sound.stop();
+				console.log("Audio playback stopped.");
+			}
+		});
+
+		// VRM model loading
+		const gltfLoader = new GLTFLoader();
+		gltfLoader.register((parser) => new VRMLoaderPlugin(parser));
+
+		let currentVrm;
+		gltfLoader.load('./AAA.vrm', (gltf) => {
+			console.log("VRM file loaded.");
+			const vrm = gltf.userData.vrm;
+			VRMUtils.removeUnnecessaryVertices(gltf.scene);
+			VRMUtils.removeUnnecessaryJoints(gltf.scene);
+			vrm.scene.traverse((obj) => obj.frustumCulled = false);
+
+			currentVrm = vrm;
+			scene.add(vrm.scene);
+
+			// BVH animation loading
+			const bvhLoader = new BVHLoader();
+			let mixer;
+
+			bvhLoader.load('./MCPM.BVH', (bvh) => {
+				console.log("BVH file loaded.");
+				const clip = bvh.clip;
+				const bvhSkeleton = bvh.skeleton;
+
+				// VRMモデルがロード済みであるか確認
+				if (currentVrm) {
+					//const vrmSkeleton = currentVrm.humanoid.getBoneNode(THREE.VRMSchema.HumanoidBoneName.Hips);
+					const vrmSkeleton = currentVrm.humanoid._rawHumanBones.humanBones.hips;
+
+					if (vrmSkeleton) {
+						// BVHスケルトンをVRMスケルトンにリターゲティング
+						THREE.AnimationUtils.retarget(vrmSkeleton, bvhSkeleton);
+						console.log("Animation retargeted to VRM model.");
+					}
+				}
+
+				// BVHスケルトンをシーンに追加（デバッグ用）
+				const skeletonHelper = new THREE.SkeletonHelper(bvhSkeleton.bones[0]);
+				scene.add(skeletonHelper);
+
+				// AnimationMixerの設定
+				mixer = new THREE.AnimationMixer(bvhSkeleton.bones[0]);
+				const action = mixer.clipAction(clip);
+				action.play();
+			});
+
+			// Animation loop
+			const clock = new THREE.Clock();
+			function animate() {
+				requestAnimationFrame(animate);
+
+				const delta = clock.getDelta();
+
+				if (mixer) mixer.update(delta);
+				if (currentVrm) currentVrm.update(delta);
+
+				renderer.render(scene, camera);
+			}
+
+			animate();
+
+		});
+		</script>
+</body>
+
+</html>
